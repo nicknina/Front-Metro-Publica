@@ -1,162 +1,241 @@
-import { useState } from 'react';
-import { useParams, Navigate } from 'react-router-dom';
-import { AppLayout } from '@/components/layout/AppLayout';
-import { ImageComparator } from '@/components/projects/ImageComparator';
-import { mockProjects, mockProjectDetails } from '@/data/mockData';
-import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Building2, Calendar, Box, Camera } from 'lucide-react';
+// src/pages/ProjectDetails.tsx
+import { useState } from "react";
+import axios, { AxiosError } from "axios"; // <-- MUDANÇA: Importamos o AxiosError
 
-const ProjectDetails = () => {
-  const { id } = useParams<{ id: string }>();
-  const [selectedComparison, setSelectedComparison] = useState('0');
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { toast } from "@/components/ui/use-toast";
 
-  const project = mockProjects.find(p => p.id === id);
-  const projectDetails = id ? mockProjectDetails[id] : null;
+// --- MUDANÇA: Interfaces mais específicas (sem 'any') ---
+// Define o que esperamos para cada item (ex: cadeira_aluno)
+interface ResultadoItem {
+  detectado: number;
+  esperado: number;
+  status: string;
+}
 
-  if (!project || !projectDetails) {
-    return <Navigate to="/obras" replace />;
-  }
+// Define a linha inteira do resultado
+interface ResultadoAnalise {
+  dia: number;
+  imagem: string;
+  // Isso permite colunas dinâmicas (cadeira_aluno, mesa_aluno, etc)
+  // mas garante que o valor delas seja um dos tipos que esperamos.
+  [key: string]: number | string | ResultadoItem;
+}
 
-  const statusConfig = {
-    'em-andamento': { label: 'Em Andamento', variant: 'default' as const },
-    'concluida': { label: 'Concluída', variant: 'success' as const },
-    'atrasada': { label: 'Atrasada', variant: 'destructive' as const },
+// Interface para a resposta de erro da nossa API Flask
+interface ErroAPI {
+  erro: string;
+}
+// --- Fim das Mudanças na Interface ---
+
+export function ProjectDetails() {
+  const [planejamentoFile, setPlanejamentoFile] = useState<File | null>(null);
+  const [imagensFiles, setImagensFiles] = useState<FileList | null>(null);
+
+  const [resultados, setResultados] = useState<ResultadoAnalise[]>([]);
+  const [colunas, setColunas] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handlePlanejamentoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      setPlanejamentoFile(e.target.files[0]);
+    }
   };
 
-  const status = statusConfig[project.status];
+  const handleImagensChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      setImagensFiles(e.target.files);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!planejamentoFile || !imagensFiles || imagensFiles.length === 0) {
+      toast({
+        title: "Erro",
+        description:
+          "Por favor, selecione o arquivo de planejamento e pelo menos uma imagem.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    setResultados([]);
+    setColunas([]);
+
+    const formData = new FormData();
+    formData.append("planejamento", planejamentoFile);
+
+    for (let i = 0; i < imagensFiles.length; i++) {
+      formData.append("imagens", imagensFiles[i]);
+    }
+
+    // --- MUDANÇA: Bloco try/catch atualizado ---
+    try {
+      const response = await axios.post<ResultadoAnalise[]>(
+        "http://localhost:5000/processar-projeto",
+        formData,
+        {
+          headers: {
+            "Content-Type": "multipart/form-data",
+          },
+        }
+      );
+
+      if (response.data && response.data.length > 0) {
+        const colunasDinamicas = Object.keys(response.data[0]).filter(
+          (key) => key !== "dia" && key !== "imagem"
+        );
+        setColunas(colunasDinamicas);
+        setResultados(response.data);
+        toast({
+          title: "Sucesso!",
+          description: "Análise concluída. Veja os resultados abaixo.",
+        });
+      } else {
+        toast({
+          title: "Aviso",
+          description:
+            "A análise foi concluída, mas nenhum resultado foi retornado.",
+          variant: "default",
+        });
+      }
+    } catch (error) {
+      // <-- MUDANÇA: 'any' removido. O tipo padrão 'unknown' será usado.
+      console.error("Erro ao processar:", error);
+
+      let errorMessage = "Não foi possível conectar ao servidor de análise.";
+
+      // Verificamos se o erro é um erro do Axios
+      if (axios.isAxiosError(error)) {
+        // Agora podemos acessar 'error.response' com segurança
+        const axiosError = error as AxiosError<ErroAPI>; // Dizemos ao TS que esperamos a interface ErroAPI
+        if (axiosError.response?.data?.erro) {
+          errorMessage = axiosError.response.data.erro;
+        }
+      } else if (error instanceof Error) {
+        // Se for um erro genérico
+        errorMessage = error.message;
+      }
+
+      toast({
+        title: "Erro de API",
+        description: errorMessage,
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+    // --- Fim das Mudanças no try/catch ---
+  };
 
   return (
-    <AppLayout title={project.name}>
-      <div className="space-y-6">
-        {/* Project Header */}
-        <Card className="shadow-card">
-          <CardHeader>
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex-1">
-                <div className="flex items-center gap-3 mb-2">
-                  <h2 className="text-2xl font-bold text-foreground">{project.name}</h2>
-                  <Badge variant={status.variant}>{status.label}</Badge>
-                </div>
-                <p className="text-muted-foreground flex items-center gap-2">
-                  <Building2 className="w-4 h-4" />
-                  {project.client}
-                </p>
-              </div>
-              <div className="text-center">
-                <div className="text-4xl font-bold text-foreground">{project.progress}%</div>
-                <div className="text-sm text-muted-foreground">Progresso</div>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <Progress value={project.progress} className="h-3" />
-          </CardContent>
-        </Card>
+    <div className="container mx-auto p-4">
+      <h1 className="text-3xl font-bold mb-6">Detalhes do Projeto</h1>
 
-        {/* Tabs */}
-        <Tabs defaultValue="comparativo" className="space-y-6">
-          <TabsList className="bg-muted">
-            <TabsTrigger value="visao-geral">Visão Geral</TabsTrigger>
-            <TabsTrigger value="documentos">Documentos</TabsTrigger>
-            <TabsTrigger value="comparativo">Comparativo (Fotos/BIM)</TabsTrigger>
-            <TabsTrigger value="equipe">Equipe</TabsTrigger>
-          </TabsList>
-
-          {/* Overview Tab */}
-          <TabsContent value="visao-geral" className="space-y-6">
-            <Card className="shadow-card">
-              <CardHeader>
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <Calendar className="w-5 h-5" />
-                  Linha do Tempo
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {projectDetails.timeline.map((event, index) => (
-                    <div key={index} className="flex gap-4">
-                      <div className="w-24 text-sm text-muted-foreground shrink-0">
-                        {new Date(event.date).toLocaleDateString('pt-BR')}
-                      </div>
-                      <div className="flex-1 pb-4 border-l-2 border-muted pl-4">
-                        <p className="text-foreground">{event.event}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* Documents Tab */}
-          <TabsContent value="documentos">
-            <Card className="shadow-card">
-              <CardContent className="p-12 text-center">
-                <p className="text-muted-foreground">Documentos serão exibidos aqui</p>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* Comparison Tab */}
-          <TabsContent value="comparativo" className="space-y-6">
-            <Card className="shadow-card">
-              <CardHeader>
-                <CardTitle className="text-lg">Selecionar Comparação</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <Select value={selectedComparison} onValueChange={setSelectedComparison}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-popover">
-                    {projectDetails.comparisonPairs.map((pair, index) => (
-                      <SelectItem key={pair.id} value={index.toString()}>
-                        {pair.title}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </CardContent>
-            </Card>
-
-            <ImageComparator pair={projectDetails.comparisonPairs[parseInt(selectedComparison)]} />
-
-            {/* AR/BIM Actions */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Button variant="outline" size="lg" className="h-auto py-4">
-                <Box className="w-5 h-5 mr-2" />
-                <div className="text-left">
-                  <div className="font-semibold">Visualizar Modelo 3D</div>
-                  <div className="text-xs text-muted-foreground">Abrir viewer BIM interativo</div>
-                </div>
-              </Button>
-              <Button variant="outline" size="lg" className="h-auto py-4">
-                <Camera className="w-5 h-5 mr-2" />
-                <div className="text-left">
-                  <div className="font-semibold">Abrir em AR</div>
-                  <div className="text-xs text-muted-foreground">Visualizar no local com câmera</div>
-                </div>
-              </Button>
-            </div>
-          </TabsContent>
-
-          {/* Team Tab */}
-          <TabsContent value="equipe">
-            <Card className="shadow-card">
-              <CardContent className="p-12 text-center">
-                <p className="text-muted-foreground">Informações da equipe serão exibidas aqui</p>
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6 border rounded-lg mb-8 bg-card">
+        <div>
+          <Label htmlFor="planejamento" className="text-lg font-semibold">
+            1. Arquivo de Planejamento (.xlsx)
+          </Label>
+          <Input
+            id="planejamento"
+            type="file"
+            accept=".xlsx"
+            onChange={handlePlanejamentoChange}
+            className="mt-2"
+          />
+        </div>
+        <div>
+          <Label htmlFor="imagens" className="text-lg font-semibold">
+            2. Fotos dos Dias (.png, .jpg)
+          </Label>
+          <Input
+            id="imagens"
+            type="file"
+            accept="image/png, image/jpeg"
+            multiple
+            onChange={handleImagensChange}
+            className="mt-2"
+          />
+          <p className="text-sm text-muted-foreground mt-1">
+            Segure Ctrl/Cmd para selecionar as 5 imagens.
+          </p>
+        </div>
+        <div className="md:col-span-2 flex justify-end">
+          <Button onClick={handleSubmit} disabled={isLoading} size="lg">
+            {isLoading ? "Processando..." : "Iniciar Análise e Gerar Relatório"}
+          </Button>
+        </div>
       </div>
-    </AppLayout>
-  );
-};
 
-export default ProjectDetails;
+      {/* Seção de Resultados */}
+      {resultados.length > 0 && (
+        <div>
+          <h2 className="text-2xl font-bold mb-4">Relatório de Comparação</h2>
+          <div className="border rounded-lg">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="font-bold">Dia</TableHead>
+                  <TableHead className="font-bold">Imagem</TableHead>
+                  {colunas.map((col) => (
+                    <TableHead key={col} className="font-bold capitalize">
+                      {col.replace(/_/g, " ")}
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {resultados.map((linha) => (
+                  <TableRow key={linha.dia}>
+                    <TableCell className="font-medium">{linha.dia}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {linha.imagem}
+                    </TableCell>
+                    {colunas.map((col) => (
+                      <TableCell key={col}>
+                        {/* Verificamos se o item existe antes de tentar acessá-lo */}
+                        {linha[col] && typeof linha[col] === "object" ? (
+                          <>
+                            <span
+                              className={
+                                (linha[col] as ResultadoItem).status.startsWith(
+                                  "❌"
+                                )
+                                  ? "text-red-500"
+                                  : "text-green-600"
+                              }
+                            >
+                              {(linha[col] as ResultadoItem).detectado} /{" "}
+                              {(linha[col] as ResultadoItem).esperado}
+                            </span>
+                            <span className="text-xs text-muted-foreground ml-2">
+                              ({(linha[col] as ResultadoItem).status})
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-muted-foreground">N/A</span>
+                        )}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

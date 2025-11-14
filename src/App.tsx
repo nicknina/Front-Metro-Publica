@@ -9,7 +9,7 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import ProjectsList from "./pages/ProjectsList";
-import ProjectDetails from "./pages/ProjectDetails";
+import { ProjectDetails } from "./pages/ProjectDetails";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
