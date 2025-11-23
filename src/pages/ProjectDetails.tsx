@@ -1,10 +1,17 @@
-// src/pages/ProjectDetails.tsx
 import { useState } from "react";
-import axios, { AxiosError } from "axios"; // <-- MUDANÇA: Importamos o AxiosError
-
+import axios, { AxiosError } from "axios";
+import { AppLayout } from "@/components/layout/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+  CardFooter,
+} from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -13,32 +20,38 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { toast } from "@/components/ui/use-toast";
+import { Badge } from "@/components/ui/badge";
+import { useToast } from "@/components/ui/use-toast";
+import {
+  Upload,
+  FileSpreadsheet,
+  CheckCircle2,
+  AlertTriangle,
+  Download,
+  Search,
+  Loader2,
+  AlertCircle,
+} from "lucide-react";
 
-// --- MUDANÇA: Interfaces mais específicas (sem 'any') ---
-// Define o que esperamos para cada item (ex: cadeira_aluno)
+// --- Interfaces ---
 interface ResultadoItem {
   detectado: number;
   esperado: number;
   status: string;
 }
 
-// Define a linha inteira do resultado
 interface ResultadoAnalise {
   dia: number;
   imagem: string;
-  // Isso permite colunas dinâmicas (cadeira_aluno, mesa_aluno, etc)
-  // mas garante que o valor delas seja um dos tipos que esperamos.
   [key: string]: number | string | ResultadoItem;
 }
 
-// Interface para a resposta de erro da nossa API Flask
 interface ErroAPI {
   erro: string;
 }
-// --- Fim das Mudanças na Interface ---
 
 export function ProjectDetails() {
+  const { toast } = useToast();
   const [planejamentoFile, setPlanejamentoFile] = useState<File | null>(null);
   const [imagensFiles, setImagensFiles] = useState<FileList | null>(null);
 
@@ -46,24 +59,22 @@ export function ProjectDetails() {
   const [colunas, setColunas] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
+  // --- Handlers de Arquivo ---
   const handlePlanejamentoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      setPlanejamentoFile(e.target.files[0]);
-    }
+    if (e.target.files) setPlanejamentoFile(e.target.files[0]);
   };
 
   const handleImagensChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      setImagensFiles(e.target.files);
-    }
+    if (e.target.files) setImagensFiles(e.target.files);
   };
 
+  // --- Envio para a API ---
   const handleSubmit = async () => {
     if (!planejamentoFile || !imagensFiles || imagensFiles.length === 0) {
       toast({
-        title: "Erro",
+        title: "Arquivos faltando",
         description:
-          "Por favor, selecione o arquivo de planejamento e pelo menos uma imagem.",
+          "Por favor, selecione o arquivo de planejamento e as fotos.",
         variant: "destructive",
       });
       return;
@@ -75,21 +86,15 @@ export function ProjectDetails() {
 
     const formData = new FormData();
     formData.append("planejamento", planejamentoFile);
-
     for (let i = 0; i < imagensFiles.length; i++) {
       formData.append("imagens", imagensFiles[i]);
     }
 
-    // --- MUDANÇA: Bloco try/catch atualizado ---
     try {
       const response = await axios.post<ResultadoAnalise[]>(
         "http://localhost:5000/processar-projeto",
         formData,
-        {
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
-        }
+        { headers: { "Content-Type": "multipart/form-data" } }
       );
 
       if (response.data && response.data.length > 0) {
@@ -100,142 +105,341 @@ export function ProjectDetails() {
         setResultados(response.data);
         toast({
           title: "Sucesso!",
-          description: "Análise concluída. Veja os resultados abaixo.",
-        });
-      } else {
-        toast({
-          title: "Aviso",
-          description:
-            "A análise foi concluída, mas nenhum resultado foi retornado.",
-          variant: "default",
+          description: "Análise concluída com sucesso.",
         });
       }
     } catch (error) {
-      // <-- MUDANÇA: 'any' removido. O tipo padrão 'unknown' será usado.
-      console.error("Erro ao processar:", error);
-
-      let errorMessage = "Não foi possível conectar ao servidor de análise.";
-
-      // Verificamos se o erro é um erro do Axios
+      console.error("Erro:", error);
+      let errorMessage = "Não foi possível conectar ao servidor.";
       if (axios.isAxiosError(error)) {
-        // Agora podemos acessar 'error.response' com segurança
-        const axiosError = error as AxiosError<ErroAPI>; // Dizemos ao TS que esperamos a interface ErroAPI
-        if (axiosError.response?.data?.erro) {
+        const axiosError = error as AxiosError<ErroAPI>;
+        if (axiosError.response?.data?.erro)
           errorMessage = axiosError.response.data.erro;
-        }
-      } else if (error instanceof Error) {
-        // Se for um erro genérico
-        errorMessage = error.message;
       }
-
       toast({
-        title: "Erro de API",
+        title: "Erro",
         description: errorMessage,
         variant: "destructive",
       });
     } finally {
       setIsLoading(false);
     }
-    // --- Fim das Mudanças no try/catch ---
+  };
+
+  // --- Exportar Excel (Formato Tabela Cruzada) ---
+  const handleExportExcel = () => {
+    if (resultados.length === 0) return;
+
+    // 1. Cabeçalho: Dia, Item 1, Item 2, ...
+    const header = ["Dia", ...colunas.map((c) => c.replace(/_/g, " "))];
+
+    // 2. Linhas de Dados: Dia, "0/0 OK", "10/10 OK"...
+    const rows = resultados.map((r) => {
+      const dadosColunas = colunas.map((c) => {
+        const item = r[c] as ResultadoItem;
+        // Formata a célula exatamente como no seu exemplo: "30/30 ✅ OK"
+        const icon = item.status === "OK" ? "✅" : "❌";
+        return `${item.detectado}/${item.esperado} ${icon} ${item.status}`;
+      });
+      return [r.dia, ...dadosColunas];
+    });
+
+    // 3. Monta o CSV (usando ponto e vírgula para Excel BR)
+    const BOM = "\uFEFF"; // Adiciona BOM para acentos funcionarem no Excel
+    const csvContent =
+      BOM + [header.join(";"), ...rows.map((r) => r.join(";"))].join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", "relatorio_acompanhamento.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // --- Gera o Resumo Explicativo em Texto ---
+  const generateSummary = () => {
+    const issues: JSX.Element[] = [];
+    let issueCount = 0;
+
+    resultados.forEach((r) => {
+      colunas.forEach((c) => {
+        const item = r[c] as ResultadoItem;
+        const nomeItem = c.replace(/_/g, " ");
+
+        // Se não estiver OK (falta)
+        if (item.status !== "OK") {
+          issueCount++;
+          issues.push(
+            <li key={`${r.dia}-${c}`} className="text-sm text-red-600">
+              <strong>Dia {r.dia}:</strong> Faltam{" "}
+              {item.esperado - item.detectado} unidades de{" "}
+              <strong>{nomeItem}</strong>. (Detectado: {item.detectado} / Meta:{" "}
+              {item.esperado})
+            </li>
+          );
+        }
+        // Se tiver Excesso (detectado > esperado) - A API retorna OK, mas podemos avisar visualmente
+        else if (item.detectado > item.esperado) {
+          issueCount++;
+          issues.push(
+            <li key={`${r.dia}-${c}`} className="text-sm text-amber-600">
+              <strong>Dia {r.dia}:</strong> Excesso de{" "}
+              {item.detectado - item.esperado} unidades de{" "}
+              <strong>{nomeItem}</strong>. (Detectado: {item.detectado} / Meta:{" "}
+              {item.esperado})
+            </li>
+          );
+        }
+      });
+    });
+
+    if (issueCount === 0) {
+      return (
+        <div className="p-4 bg-green-50 border border-green-200 rounded-lg flex items-start gap-3">
+          <CheckCircle2 className="w-5 h-5 text-green-600 mt-0.5" />
+          <div>
+            <h4 className="font-semibold text-green-800">Execução Perfeita</h4>
+            <p className="text-sm text-green-700">
+              Todos os itens detectados correspondem exatamente ao planejamento.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-3">
+        <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5" />
+        <div className="w-full">
+          <h4 className="font-semibold text-amber-800 mb-2">
+            Atenção aos seguintes pontos ({issueCount}):
+          </h4>
+          <ul className="list-disc pl-5 space-y-1 max-h-40 overflow-y-auto pr-2">
+            {issues}
+          </ul>
+        </div>
+      </div>
+    );
   };
 
   return (
-    <div className="container mx-auto p-4">
-      <h1 className="text-3xl font-bold mb-6">Detalhes do Projeto</h1>
+    <AppLayout title="Análise de Progresso da Obra">
+      <div className="space-y-6 max-w-7xl mx-auto">
+        {/* Card de Upload e Ação */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <Card className="lg:col-span-2 shadow-sm border-border/60">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-xl">
+                <Search className="w-5 h-5 text-primary" />
+                Nova Análise
+              </CardTitle>
+              <CardDescription>
+                Carregue o planejamento e as fotos para gerar o comparativo.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Input Planejamento */}
+                <div className="space-y-3">
+                  <Label className="text-base font-medium">
+                    1. Planilha de Planejamento
+                  </Label>
+                  <div className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-8 flex flex-col items-center justify-center hover:bg-muted/50 transition-all cursor-pointer relative group">
+                    <FileSpreadsheet className="w-10 h-10 text-muted-foreground mb-3 group-hover:text-primary transition-colors" />
+                    <span className="text-sm text-muted-foreground text-center px-4 truncate w-full font-medium">
+                      {planejamentoFile ? (
+                        <span className="text-foreground">
+                          {planejamentoFile.name}
+                        </span>
+                      ) : (
+                        "Clique para selecionar o .xlsx"
+                      )}
+                    </span>
+                    <Input
+                      type="file"
+                      accept=".xlsx"
+                      onChange={handlePlanejamentoChange}
+                      className="absolute inset-0 opacity-0 cursor-pointer"
+                    />
+                  </div>
+                </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6 border rounded-lg mb-8 bg-card">
-        <div>
-          <Label htmlFor="planejamento" className="text-lg font-semibold">
-            1. Arquivo de Planejamento (.xlsx)
-          </Label>
-          <Input
-            id="planejamento"
-            type="file"
-            accept=".xlsx"
-            onChange={handlePlanejamentoChange}
-            className="mt-2"
-          />
-        </div>
-        <div>
-          <Label htmlFor="imagens" className="text-lg font-semibold">
-            2. Fotos dos Dias (.png, .jpg)
-          </Label>
-          <Input
-            id="imagens"
-            type="file"
-            accept="image/png, image/jpeg"
-            multiple
-            onChange={handleImagensChange}
-            className="mt-2"
-          />
-          <p className="text-sm text-muted-foreground mt-1">
-            Segure Ctrl/Cmd para selecionar as 5 imagens.
-          </p>
-        </div>
-        <div className="md:col-span-2 flex justify-end">
-          <Button onClick={handleSubmit} disabled={isLoading} size="lg">
-            {isLoading ? "Processando..." : "Iniciar Análise e Gerar Relatório"}
-          </Button>
-        </div>
-      </div>
+                {/* Input Imagens */}
+                <div className="space-y-3">
+                  <Label className="text-base font-medium">
+                    2. Fotos do Local (Dia 1 a 5)
+                  </Label>
+                  <div className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-8 flex flex-col items-center justify-center hover:bg-muted/50 transition-all cursor-pointer relative group">
+                    <Upload className="w-10 h-10 text-muted-foreground mb-3 group-hover:text-primary transition-colors" />
+                    <span className="text-sm text-muted-foreground text-center px-4 font-medium">
+                      {imagensFiles ? (
+                        <span className="text-foreground">
+                          {imagensFiles.length} fotos selecionadas
+                        </span>
+                      ) : (
+                        "Selecione as 5 imagens"
+                      )}
+                    </span>
+                    <Input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={handleImagensChange}
+                      className="absolute inset-0 opacity-0 cursor-pointer"
+                    />
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+            <CardFooter className="bg-muted/20 border-t flex justify-end py-4">
+              <Button
+                onClick={handleSubmit}
+                disabled={isLoading}
+                size="lg"
+                className="w-full md:w-auto font-semibold shadow-sm"
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />{" "}
+                    Processando Inteligência Artificial...
+                  </>
+                ) : (
+                  "Iniciar Análise Comparativa"
+                )}
+              </Button>
+            </CardFooter>
+          </Card>
 
-      {/* Seção de Resultados */}
-      {resultados.length > 0 && (
-        <div>
-          <h2 className="text-2xl font-bold mb-4">Relatório de Comparação</h2>
-          <div className="border rounded-lg">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="font-bold">Dia</TableHead>
-                  <TableHead className="font-bold">Imagem</TableHead>
-                  {colunas.map((col) => (
-                    <TableHead key={col} className="font-bold capitalize">
-                      {col.replace(/_/g, " ")}
-                    </TableHead>
-                  ))}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {resultados.map((linha) => (
-                  <TableRow key={linha.dia}>
-                    <TableCell className="font-medium">{linha.dia}</TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {linha.imagem}
-                    </TableCell>
-                    {colunas.map((col) => (
-                      <TableCell key={col}>
-                        {/* Verificamos se o item existe antes de tentar acessá-lo */}
-                        {linha[col] && typeof linha[col] === "object" ? (
-                          <>
-                            <span
-                              className={
-                                (linha[col] as ResultadoItem).status.startsWith(
-                                  "❌"
-                                )
-                                  ? "text-red-500"
-                                  : "text-green-600"
-                              }
-                            >
-                              {(linha[col] as ResultadoItem).detectado} /{" "}
-                              {(linha[col] as ResultadoItem).esperado}
-                            </span>
-                            <span className="text-xs text-muted-foreground ml-2">
-                              ({(linha[col] as ResultadoItem).status})
-                            </span>
-                          </>
-                        ) : (
-                          <span className="text-muted-foreground">N/A</span>
-                        )}
-                      </TableCell>
+          {/* Card de Resumo (Aparece após análise) */}
+          <Card className="shadow-sm border-border/60 flex flex-col h-full">
+            <CardHeader>
+              <CardTitle className="text-lg">Resumo Executivo</CardTitle>
+            </CardHeader>
+            <CardContent className="flex-1">
+              {resultados.length > 0 ? (
+                generateSummary()
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-center p-6 text-muted-foreground border rounded-lg border-dashed">
+                  <AlertCircle className="w-8 h-8 mb-2 opacity-50" />
+                  <p className="text-sm">
+                    Aguardando processamento para exibir o resumo das
+                    divergências.
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Tabela de Resultados Detalhada */}
+        {resultados.length > 0 && (
+          <Card className="shadow-md border-border/60 animate-in fade-in slide-in-from-bottom-4 duration-700">
+            <CardHeader className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b bg-muted/10">
+              <div>
+                <CardTitle>Relatório Detalhado</CardTitle>
+                <CardDescription>
+                  Comparativo item a item por dia de execução.
+                </CardDescription>
+              </div>
+              <Button
+                variant="outline"
+                className="shadow-sm border-primary/20 hover:bg-primary/5 text-primary"
+                onClick={handleExportExcel}
+              >
+                <Download className="w-4 h-4 mr-2" />
+                Baixar Relatório Excel
+              </Button>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader className="bg-muted/50">
+                    <TableRow>
+                      <TableHead className="w-[80px] font-bold text-center">
+                        Dia
+                      </TableHead>
+                      <TableHead className="w-[180px] font-bold">
+                        Imagem Analisada
+                      </TableHead>
+                      {colunas.map((col) => (
+                        <TableHead
+                          key={col}
+                          className="font-bold capitalize text-center min-w-[140px]"
+                        >
+                          {col.replace(/_/g, " ")}
+                        </TableHead>
+                      ))}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {resultados.map((linha) => (
+                      <TableRow key={linha.dia} className="hover:bg-muted/5">
+                        <TableCell className="font-bold text-center text-lg text-muted-foreground/80">
+                          {linha.dia}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground truncate max-w-[150px] font-mono bg-muted/10">
+                          {linha.imagem}
+                        </TableCell>
+                        {colunas.map((col) => {
+                          const item = linha[col] as ResultadoItem;
+                          // Lógica de Cores e Badges
+                          let statusColor =
+                            "bg-green-100 text-green-700 border-green-200 hover:bg-green-100";
+                          let statusText = "OK";
+
+                          if (item.status !== "OK") {
+                            statusColor =
+                              "bg-red-100 text-red-700 border-red-200 hover:bg-red-100";
+                            statusText = `Falta ${
+                              item.esperado - item.detectado
+                            }`;
+                          } else if (item.detectado > item.esperado) {
+                            statusColor =
+                              "bg-amber-100 text-amber-700 border-amber-200 hover:bg-amber-100";
+                            statusText = `+${
+                              item.detectado - item.esperado
+                            } Extra`;
+                          }
+
+                          return (
+                            <TableCell key={col} className="text-center p-2">
+                              <div className="flex flex-col items-center justify-center gap-1.5 p-2 rounded-md transition-colors hover:bg-muted/10">
+                                <div className="flex items-baseline gap-1">
+                                  <span
+                                    className={`text-lg font-bold ${
+                                      item.detectado < item.esperado
+                                        ? "text-red-600"
+                                        : "text-foreground"
+                                    }`}
+                                  >
+                                    {item.detectado}
+                                  </span>
+                                  <span className="text-xs text-muted-foreground font-medium">
+                                    / {item.esperado}
+                                  </span>
+                                </div>
+                                <Badge
+                                  variant="outline"
+                                  className={`text-[10px] h-5 px-2 shadow-sm ${statusColor}`}
+                                >
+                                  {statusText}
+                                </Badge>
+                              </div>
+                            </TableCell>
+                          );
+                        })}
+                      </TableRow>
                     ))}
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </div>
-      )}
-    </div>
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    </AppLayout>
   );
 }
