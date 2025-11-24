@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useParams, Navigate } from "react-router-dom";
 import axios, { AxiosError } from "axios";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/components/ui/use-toast";
 import {
   Upload,
@@ -30,11 +32,17 @@ import {
   Download,
   Search,
   Loader2,
+  Building2,
   AlertCircle,
 } from "lucide-react";
+import {
+  getProjectById,
+  saveAnalysisResult,
+  ProjectWithAnalysis,
+} from "@/lib/projectStore";
 
 // --- Interfaces ---
-interface ResultadoItem {
+interface ItemResult {
   detectado: number;
   esperado: number;
   status: string;
@@ -43,7 +51,7 @@ interface ResultadoItem {
 interface ResultadoAnalise {
   dia: number;
   imagem: string;
-  [key: string]: number | string | ResultadoItem;
+  [key: string]: number | string | ItemResult;
 }
 
 interface ErroAPI {
@@ -51,13 +59,30 @@ interface ErroAPI {
 }
 
 export function ProjectDetails() {
+  const { id } = useParams<{ id: string }>();
   const { toast } = useToast();
+
+  // Carrega do store (Banco de Dados Local)
+  const [project, setProject] = useState<ProjectWithAnalysis | undefined>(
+    id ? getProjectById(id) : undefined
+  );
+
   const [planejamentoFile, setPlanejamentoFile] = useState<File | null>(null);
   const [imagensFiles, setImagensFiles] = useState<FileList | null>(null);
-
   const [resultados, setResultados] = useState<ResultadoAnalise[]>([]);
   const [colunas, setColunas] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Escuta atualizações do store
+  useEffect(() => {
+    const handleUpdate = () => {
+      if (id) setProject(getProjectById(id));
+    };
+    window.addEventListener("project-updated", handleUpdate);
+    return () => window.removeEventListener("project-updated", handleUpdate);
+  }, [id]);
+
+  if (!project) return <Navigate to="/" replace />;
 
   // --- Handlers de Arquivo ---
   const handlePlanejamentoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -73,8 +98,7 @@ export function ProjectDetails() {
     if (!planejamentoFile || !imagensFiles || imagensFiles.length === 0) {
       toast({
         title: "Arquivos faltando",
-        description:
-          "Por favor, selecione o arquivo de planejamento e as fotos.",
+        description: "Selecione o arquivo de planejamento e as fotos.",
         variant: "destructive",
       });
       return;
@@ -98,14 +122,37 @@ export function ProjectDetails() {
       );
 
       if (response.data && response.data.length > 0) {
-        const colunasDinamicas = Object.keys(response.data[0]).filter(
+        const data = response.data;
+        const cols = Object.keys(data[0]).filter(
           (key) => key !== "dia" && key !== "imagem"
         );
-        setColunas(colunasDinamicas);
-        setResultados(response.data);
+        setColunas(cols);
+        setResultados(data);
+
+        // Lógica de Cálculo de Progresso Real para o Dashboard
+        let totalItens = 0;
+        let itensOk = 0;
+        let divergencias = 0;
+
+        data.forEach((row) => {
+          cols.forEach((col) => {
+            const item = row[col] as ItemResult;
+            totalItens++;
+            if (item.status.includes("OK")) itensOk++;
+            else divergencias++;
+          });
+        });
+
+        const novoProgresso = totalItens > 0 ? (itensOk / totalItens) * 100 : 0;
+
+        // Salva no store para liberar o Dashboard
+        if (id) {
+          saveAnalysisResult(id, novoProgresso, divergencias, data);
+        }
+
         toast({
           title: "Sucesso!",
-          description: "Análise concluída com sucesso.",
+          description: "Análise concluída. Veja o resumo abaixo.",
         });
       }
     } catch (error) {
@@ -126,29 +173,21 @@ export function ProjectDetails() {
     }
   };
 
-  // --- Exportar Excel (Formato Tabela Cruzada) ---
+  // --- Exportar Excel ---
   const handleExportExcel = () => {
     if (resultados.length === 0) return;
-
-    // 1. Cabeçalho: Dia, Item 1, Item 2, ...
     const header = ["Dia", ...colunas.map((c) => c.replace(/_/g, " "))];
-
-    // 2. Linhas de Dados: Dia, "0/0 OK", "10/10 OK"...
     const rows = resultados.map((r) => {
       const dadosColunas = colunas.map((c) => {
-        const item = r[c] as ResultadoItem;
-        // Formata a célula exatamente como no seu exemplo: "30/30 ✅ OK"
+        const item = r[c] as ItemResult;
         const icon = item.status === "OK" ? "✅" : "❌";
         return `${item.detectado}/${item.esperado} ${icon} ${item.status}`;
       });
       return [r.dia, ...dadosColunas];
     });
-
-    // 3. Monta o CSV (usando ponto e vírgula para Excel BR)
-    const BOM = "\uFEFF"; // Adiciona BOM para acentos funcionarem no Excel
+    const BOM = "\uFEFF";
     const csvContent =
       BOM + [header.join(";"), ...rows.map((r) => r.join(";"))].join("\n");
-
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -159,14 +198,18 @@ export function ProjectDetails() {
     document.body.removeChild(link);
   };
 
-  // --- Gera o Resumo Explicativo em Texto ---
+  // --- FUNÇÃO DE RESUMO (Restaurada!) ---
   const generateSummary = () => {
     const issues: JSX.Element[] = [];
     let issueCount = 0;
 
     resultados.forEach((r) => {
       colunas.forEach((c) => {
-        const item = r[c] as ResultadoItem;
+        const item = r[c] as ItemResult;
+
+        // Verifica se item é válido
+        if (!item || typeof item !== "object") return;
+
         const nomeItem = c.replace(/_/g, " ");
 
         // Se não estiver OK (falta)
@@ -181,7 +224,7 @@ export function ProjectDetails() {
             </li>
           );
         }
-        // Se tiver Excesso (detectado > esperado) - A API retorna OK, mas podemos avisar visualmente
+        // Se tiver Excesso
         else if (item.detectado > item.esperado) {
           issueCount++;
           issues.push(
@@ -226,15 +269,37 @@ export function ProjectDetails() {
   };
 
   return (
-    <AppLayout title="Análise de Progresso da Obra">
+    <AppLayout title={project.name}>
       <div className="space-y-6 max-w-7xl mx-auto">
-        {/* Card de Upload e Ação */}
+        {/* Header Dinâmico da Obra */}
+        <Card className="shadow-sm border-l-4 border-l-primary">
+          <CardHeader className="pb-2">
+            <div className="flex justify-between items-start">
+              <div>
+                <CardTitle className="text-2xl">{project.name}</CardTitle>
+                <CardDescription className="flex items-center gap-2 mt-1">
+                  <Building2 className="w-4 h-4" /> {project.client}
+                </CardDescription>
+              </div>
+              <div className="text-right">
+                <span className="text-3xl font-bold text-primary">
+                  {project.progress}%
+                </span>
+                <p className="text-xs text-muted-foreground">Concluído</p>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <Progress value={project.progress} className="h-2" />
+          </CardContent>
+        </Card>
+
+        {/* Card de Upload e Resumo */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <Card className="lg:col-span-2 shadow-sm border-border/60">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-xl">
-                <Search className="w-5 h-5 text-primary" />
-                Nova Análise
+                <Search className="w-5 h-5 text-primary" /> Nova Análise
               </CardTitle>
               <CardDescription>
                 Carregue o planejamento e as fotos para gerar o comparativo.
@@ -242,7 +307,6 @@ export function ProjectDetails() {
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Input Planejamento */}
                 <div className="space-y-3">
                   <Label className="text-base font-medium">
                     1. Planilha de Planejamento
@@ -266,8 +330,6 @@ export function ProjectDetails() {
                     />
                   </div>
                 </div>
-
-                {/* Input Imagens */}
                 <div className="space-y-3">
                   <Label className="text-base font-medium">
                     2. Fotos do Local (Dia 1 a 5)
@@ -304,7 +366,7 @@ export function ProjectDetails() {
                 {isLoading ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />{" "}
-                    Processando Inteligência Artificial...
+                    Processando IA...
                   </>
                 ) : (
                   "Iniciar Análise Comparativa"
@@ -313,14 +375,14 @@ export function ProjectDetails() {
             </CardFooter>
           </Card>
 
-          {/* Card de Resumo (Aparece após análise) */}
+          {/* Card de Resumo Lateral - AGORA COM TEXTO */}
           <Card className="shadow-sm border-border/60 flex flex-col h-full">
             <CardHeader>
               <CardTitle className="text-lg">Resumo Executivo</CardTitle>
             </CardHeader>
             <CardContent className="flex-1">
               {resultados.length > 0 ? (
-                generateSummary()
+                generateSummary() // <--- Aqui chamamos a função de texto de volta!
               ) : (
                 <div className="h-full flex flex-col items-center justify-center text-center p-6 text-muted-foreground border rounded-lg border-dashed">
                   <AlertCircle className="w-8 h-8 mb-2 opacity-50" />
@@ -334,7 +396,7 @@ export function ProjectDetails() {
           </Card>
         </div>
 
-        {/* Tabela de Resultados Detalhada */}
+        {/* Tabela de Resultados */}
         {resultados.length > 0 && (
           <Card className="shadow-md border-border/60 animate-in fade-in slide-in-from-bottom-4 duration-700">
             <CardHeader className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b bg-muted/10">
@@ -344,13 +406,8 @@ export function ProjectDetails() {
                   Comparativo item a item por dia de execução.
                 </CardDescription>
               </div>
-              <Button
-                variant="outline"
-                className="shadow-sm border-primary/20 hover:bg-primary/5 text-primary"
-                onClick={handleExportExcel}
-              >
-                <Download className="w-4 h-4 mr-2" />
-                Baixar Relatório Excel
+              <Button variant="outline" onClick={handleExportExcel}>
+                <Download className="w-4 h-4 mr-2" /> Baixar Relatório Excel
               </Button>
             </CardHeader>
             <CardContent className="p-0">
@@ -384,29 +441,26 @@ export function ProjectDetails() {
                           {linha.imagem}
                         </TableCell>
                         {colunas.map((col) => {
-                          const item = linha[col] as ResultadoItem;
-                          // Lógica de Cores e Badges
+                          const item = linha[col] as ItemResult;
                           let statusColor =
-                            "bg-green-100 text-green-700 border-green-200 hover:bg-green-100";
+                            "bg-green-100 text-green-700 border-green-200";
                           let statusText = "OK";
-
                           if (item.status !== "OK") {
                             statusColor =
-                              "bg-red-100 text-red-700 border-red-200 hover:bg-red-100";
+                              "bg-red-100 text-red-700 border-red-200";
                             statusText = `Falta ${
                               item.esperado - item.detectado
                             }`;
                           } else if (item.detectado > item.esperado) {
                             statusColor =
-                              "bg-amber-100 text-amber-700 border-amber-200 hover:bg-amber-100";
+                              "bg-amber-100 text-amber-700 border-amber-200";
                             statusText = `+${
                               item.detectado - item.esperado
                             } Extra`;
                           }
-
                           return (
                             <TableCell key={col} className="text-center p-2">
-                              <div className="flex flex-col items-center justify-center gap-1.5 p-2 rounded-md transition-colors hover:bg-muted/10">
+                              <div className="flex flex-col items-center justify-center gap-1.5 p-2 rounded-md hover:bg-muted/10">
                                 <div className="flex items-baseline gap-1">
                                   <span
                                     className={`text-lg font-bold ${
@@ -417,7 +471,7 @@ export function ProjectDetails() {
                                   >
                                     {item.detectado}
                                   </span>
-                                  <span className="text-xs text-muted-foreground font-medium">
+                                  <span className="text-xs text-muted-foreground">
                                     / {item.esperado}
                                   </span>
                                 </div>
